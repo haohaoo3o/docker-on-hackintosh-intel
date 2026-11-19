@@ -1,0 +1,10 @@
+*.log
+*.tmp
+.DS_Store
+__pycache__/
+*.pyc
+*.dmg
+*.tgz
+*.tar.gz
+*.raw
+*.raw.gz

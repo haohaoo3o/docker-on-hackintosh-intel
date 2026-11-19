@@ -1,0 +1,64 @@
+# Lima instance template for docker-on-hackintosh-intel.
+#
+# Deliberately uses the default SLIRP user-mode network: the `networks:` key
+# is ABSENT. This is essential — Lima's `user-v2` network needs guest IP
+# resolution that is unreliable under slow TCG boots (see TROUBLESHOOTING).
+#
+# The docker.sock forwarding below is handled by Lima's hostagent, not by a
+# manual SSH tunnel. Variables {{ .User }} etc. are expanded by Lima.
+
+vmType: qemu
+arch: x86_64
+
+images:
+  - location: __IMAGE_PATH__
+    arch: x86_64
+
+cpus: __CPUS__
+memory: __MEMORY__
+disk: __DISK__
+
+mounts:
+  - location: "~"
+    writable: true
+mountType: 9p
+
+ssh:
+  loadDotSSHPubKeys: false
+  forwardAgent: false
+
+containerd:
+  system: false
+  user: false
+
+firmware:
+  legacyBIOS: false
+
+hostResolver:
+  enabled: true
+  hosts:
+    host.docker.internal: host.lima.internal
+
+# Forward the guest Docker (and containerd) sockets to the host. Lima's
+# hostagent maintains these; no ssh -L needed.
+portForwards:
+  - guestSocket: /var/run/docker.sock
+    hostSocket: __DOCKER_SOCK__
+  - guestSocket: /var/run/containerd/containerd.sock
+    hostSocket: __CONTAINERD_SOCK__
+
+# NOTE: no `networks:` block -> default SLIRP (QEMU user-mode networking).
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      sysctl -w fs.inotify.max_user_watches=1048576 || true
+      # Ensure DNS resolves even if systemd-resolved is not fully up under TCG.
+      mkdir -p /run/systemd/resolve
+      printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\nnameserver 192.168.5.2\n' \
+        > /run/systemd/resolve/resolv.conf
+      ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+      groupadd -f docker && usermod -aG docker {{ .User }} || true
+      # Restart dockerd so it picks up the fresh resolv.conf.
+      systemctl restart docker 2>/dev/null || true

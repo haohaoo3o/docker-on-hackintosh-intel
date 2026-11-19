@@ -1,0 +1,16 @@
+#!/bin/bash
+# docker-down — stop the QEMU-TCG Docker engine.
+# Part of https://github.com/haohaoo3o/docker-on-hackintosh-intel
+
+BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+LIMA_HOME_DIR="${LIMA_HOME_DIR:-$HOME/.colima/_lima}"
+INSTANCE="${INSTANCE:-colima}"
+
+export PATH="$BIN_DIR:$PATH"
+export LIMA_HOME="$LIMA_HOME_DIR"
+
+if limactl stop "$INSTANCE" 2>/dev/null; then
+  echo "Docker VM '$INSTANCE' stopped."
+else
+  echo "Docker VM '$INSTANCE' was not running."
+fi

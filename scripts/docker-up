@@ -1,0 +1,74 @@
+#!/bin/bash
+# docker-up — start the QEMU-TCG Docker engine (idempotent).
+# Part of https://github.com/haohaoo3o/docker-on-hackintosh-intel
+
+BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+QEMU_DIR="${QEMU_DIR:-$HOME/.local/qemu}"
+LIMA_HOME_DIR="${LIMA_HOME_DIR:-$HOME/.colima/_lima}"
+INSTANCE="${INSTANCE:-colima}"
+DOCKER_SOCK="${DOCKER_SOCK:-$HOME/.colima/default/docker.sock}"
+
+export PATH="$BIN_DIR:$QEMU_DIR/bin:$PATH"
+export LIMA_HOME="$LIMA_HOME_DIR"
+
+C_OK=$'\033[0;32m'; C_WARN=$'\033[1;33m'; C_ERR=$'\033[0;31m'; C_OFF=$'\033[0m'
+log()  { echo "${C_OK}[+]$C_OFF $*"; }
+warn() { echo "${C_WARN}[!]$C_OFF $*"; }
+err()  { echo "${C_ERR}[x]$C_OFF $*" >&2; }
+
+# 1. Start VM (skip if already running)
+log "Checking VM '$INSTANCE'..."
+if limactl list 2>/dev/null | grep -E "^$INSTANCE[[:space:]].*Running" >/dev/null; then
+  log "VM already running."
+else
+  log "Starting VM (TCG boot can take 3-5 minutes)..."
+  limactl start --timeout=30m "$INSTANCE" || { err "VM failed to start."; exit 1; }
+fi
+
+# 2. Find SSH port and wait for guest
+SSHC="$LIMA_HOME_DIR/$INSTANCE/ssh.config"
+PORT=$(grep -oE 'Port [0-9]+' "$SSHC" 2>/dev/null | awk '{print $2}' | head -1)
+[ -z "$PORT" ] && PORT=50493
+KEY="$LIMA_HOME_DIR/_config/user"
+
+log "Waiting for SSH on port $PORT..."
+for i in $(seq 1 40); do
+  if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+       -o ConnectTimeout=5 -i "$KEY" -p "$PORT" george@127.0.0.1 true 2>/dev/null; then
+    log "SSH ready."
+    break
+  fi
+  [ "$i" = "40" ] && { err "SSH never became ready."; exit 1; }
+  sleep 5
+done
+
+# 3. Guest-side fixups: DNS + dockerd (idempotent)
+log "Applying guest DNS + dockerd fixups..."
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$KEY" -p "$PORT" \
+  george@127.0.0.1 bash -s <<'REMOTE' 2>/dev/null
+sudo mkdir -p /run/systemd/resolve
+printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\nnameserver 192.168.5.2\n' \
+  | sudo tee /run/systemd/resolve/resolv.conf >/dev/null
+sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+sudo systemctl is-active docker >/dev/null 2>&1 || sudo systemctl restart docker
+REMOTE
+
+# 4. Ensure Docker context
+log "Ensuring Docker context 'colima'..."
+if ! docker context inspect colima >/dev/null 2>&1; then
+  docker context create colima --description "Colima QEMU-TCG" \
+    --docker "host=unix://$DOCKER_SOCK" >/dev/null 2>&1
+fi
+docker context use colima >/dev/null 2>&1
+
+# 5. Verify
+log "Verifying Docker..."
+for i in $(seq 1 10); do
+  if docker info >/dev/null 2>&1; then
+    log "DOCKER READY  (docker $(docker version --format '{{.Server.Version}}' 2>/dev/null))"
+    exit 0
+  fi
+  sleep 3
+done
+err "DOCKER NOT READY — see docs/TROUBLESHOOTING.md"
+exit 1
